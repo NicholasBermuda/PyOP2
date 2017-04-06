@@ -576,7 +576,7 @@ class Set(object):
 
     @validate_type(('size', (int, tuple, list, np.ndarray), SizeTypeError),
                    ('name', str, NameTypeError))
-    def __init__(self, size=None, name=None, halo=None, comm=None):
+    def __init__(self, size, name=None, halo=None, comm=None):
         self.comm = dup_comm(comm)
         if type(size) is int:
             size = [size] * 4
