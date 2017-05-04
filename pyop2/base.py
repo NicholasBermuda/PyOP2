@@ -808,7 +808,7 @@ class ExtrudedSet(Set):
     """
 
     @validate_type(('parent', Set, TypeError))
-    def __init__(self, parent, layers):
+    def __init__(self, parent, layers, masks=None):
         self._parent = parent
         try:
             layers = verify_reshape(layers, IntType, (parent.total_size, 2))
@@ -828,6 +828,7 @@ class ExtrudedSet(Set):
             layers = np.asarray([[0, layers]], dtype=IntType)
             self.constant_layers = True
 
+        self.masks = masks
         self._layers = layers
         self._extruded = True
 
@@ -1003,6 +1004,29 @@ class Subset(ExtrudedSet):
             return self._superset.layers_array
         else:
             return self._superset.layers_array[self.indices, ...]
+
+    @cached_property
+    def masks(self):
+        if self._superset.masks is None:
+            return None
+        (pbottom, ptop), psection = self._superset.masks
+        # Avoid importing PETSc directly!
+        section = type(psection)().create(comm=MPI.COMM_SELF)
+        section.setChart(0, self.total_size)
+        shape = (numpy.sum(self.layers[:, 1] - self.layers[:, 0] - 1), ) + pbottom.shape[1:]
+        bottom = numpy.zeros(shape, dtype=pbottom.dtype)
+        top = numpy.zeros_like(bottom)
+        idx = 0
+        for i, pidx in enumerate(self.indices):
+            offset = psection.getOffset(pidx)
+            nval = self.layers[i, 1] - self.layers[i, 0] - 1
+            for j in range(nval):
+                bottom[idx] = pbottom[offset + j]
+                top[idx] = ptop[offset + j]
+                idx += 1
+            section.setDof(i, nval)
+        section.setUp()
+        return (bottom, top), section
 
     @cached_property
     def _argtype(self):
