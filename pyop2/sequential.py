@@ -447,14 +447,11 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
         return '\n'.join(val)+'\n'
 
     def c_map_bcs_variable(self, sign, is_facet):
-        if is_facet:
-            raise NotImplementedError("Haven't figured out to do facet integrals yet")
         maps = as_tuple(self.map, Map)
         val = []
-        if sign == "-":
-            val.append("const PetscInt bottom_mask = bottom_masks[entity_offset + j_0];")
-            val.append("const PetscInt top_mask = top_masks[entity_offset + j_0];")
-            val.append("PetscInt dof, off;")
+        val.append("for (int facet = 0; facet < %d; facet++) {" % (2 if is_facet else 1))
+        val.append("const PetscInt bottom_mask = bottom_masks[entity_offset + j_0 + facet];")
+        val.append("const PetscInt top_mask = top_masks[entity_offset + j_0 + facet];")
         bottom_masking = []
         top_masking = []
         chart = None
@@ -468,15 +465,18 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
                         chart = m.boundary_masks[method].section.getChart()
                     else:
                         assert chart == m.boundary_masks[method].section.getChart()
-                    tmp = []
-                    tmp.append("ierr = PetscSectionGetDof(%(map_name)s_mask->section, bit, &dof); CHKERRQ(ierr);")
-                    tmp.append("ierr = PetscSectionGetOffset(%(map_name)s_mask->section, bit, &off); CHKERRQ(ierr);")
-                    tmp.append("for (int k = off; k < off + dof; k++) {")
-                    tmp.append("    xtr_%(map_name)s[%(map_name)s_mask_indices[k]] %(sign)s= 10000000;")
-                    tmp.append("}")
-                    tmp = "\n".join(tmp) % {"map_name": map_name,
-                                            "name": location,
-                                            "sign": sign}
+                    tmp = """apply_extruded_mask(%(map_name)s_mask->section,
+                                                 %(map_name)s_mask_indices,
+                                                 %(mask_name)s,
+                                                 facet*%(facet_offset)s,
+                                                 %(nbits)s,
+                                                 %(sign)s10000000,
+                                                 xtr_%(map_name)s);""" % \
+                          {"map_name": map_name,
+                           "mask_name": "%s_mask" % location,
+                           "facet_offset": m.arity,
+                           "nbits": chart[1],
+                           "sign": sign}
                     if location == "bottom":
                         bottom_masking.append(tmp)
                     else:
@@ -484,15 +484,10 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
         if chart is None:
             # No implicit bcs found
             return ""
-        val.append("for (int bit = %d; bit < %d; bit++) {" % chart)
         if len(bottom_masking) > 0:
-            val.append("    if (bottom_mask & (1L<<bit)) {")
-            val.append("        \n".join(bottom_masking))
-            val.append("    }")
+            val.append("\n".join(bottom_masking))
         if len(top_masking) > 0:
-            val.append("    if (top_mask & (1L<<bit)) {")
-            val.append("        \n".join(top_masking))
-            val.append("    }")
+            val.append("\n".join(top_masking))
         val.append("}")
         return "\n".join(val)
 
@@ -634,6 +629,30 @@ struct EntityMask {
     IS           bottom;
     IS           top;
 };
+
+static PetscErrorCode apply_extruded_mask(PetscSection section,
+                                          const PetscInt mask_indices[],
+                                          const PetscInt mask,
+                                          const int facet_offset,
+                                          const int nbits,
+                                          const int value_offset,
+                                          PetscInt map[])
+{
+    PetscErrorCode ierr;
+    PetscInt dof, off;
+    /* Shortcircuit for interior cells */
+    if (!mask) return 0;
+    for (int bit = 0; bit < nbits; bit++) {
+        if (mask & (1L<<bit)) {
+            ierr = PetscSectionGetDof(section, bit, &dof); CHKERRQ(ierr);
+            ierr = PetscSectionGetOffset(section, bit, &off); CHKERRQ(ierr);
+            for (int k = off; k < off + dof; k++) {
+                map[mask_indices[k] + facet_offset] += value_offset;
+            }
+        }
+    }
+    return 0;
+}
 
 PetscErrorCode %(wrapper_name)s(int start,
                       int end,
@@ -981,7 +1000,7 @@ def wrapper_snippets(itspace, args,
                 _iterset_masks = "struct EntityMask *iterset_masks,"
             for arg in args:
                 if arg._is_mat and any(len(m.implicit_bcs) > 0 for map in as_tuple(arg.map) for m in map):
-                    if itspace.iterset_masks.masks is None:
+                    if itspace.iterset.masks is None:
                         raise RuntimeError("Somehow iteration set has no masks, but they are needed")
                     _entity_offset = "PetscInt entity_offset;\n"
                     _entity_offset += "ierr = PetscSectionGetOffset(iterset_masks->section, n, &entity_offset);CHKERRQ(ierr);\n"
